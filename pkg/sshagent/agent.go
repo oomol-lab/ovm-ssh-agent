@@ -19,6 +19,7 @@ type ProxyAgent struct {
 	log                types.Logger
 }
 
+// NewProxyAgent creates a new ProxyAgent.
 func NewProxyAgent(log types.Logger) *ProxyAgent {
 	return &ProxyAgent{
 		local: agent.NewKeyring(),
@@ -26,10 +27,13 @@ func NewProxyAgent(log types.Logger) *ProxyAgent {
 	}
 }
 
+// SetExtendedAgent sets the extended agent path.
 func (a *ProxyAgent) SetExtendedAgent(socketPath string) {
 	a.upstreamSocketPath = socketPath
 }
 
+// AddIdentities adds identities to the agent(local).
+// It not adds identities to the extended agent.
 func (a *ProxyAgent) AddIdentities(key ...agent.AddedKey) error {
 	for _, k := range key {
 		if err := a.Add(k); err != nil {
@@ -55,6 +59,7 @@ func (a *ProxyAgent) refreshExtendedAgent() agent.ExtendedAgent {
 	return agent.NewClient(conn)
 }
 
+// List returns the identities known to the agent(local + extended).
 func (a *ProxyAgent) List() ([]*agent.Key, error) {
 	l, err := a.local.List()
 
@@ -72,18 +77,25 @@ func (a *ProxyAgent) List() ([]*agent.Key, error) {
 	return l, err
 }
 
+// Add adds a private key to the agent(local).
+// It will not add from extended agent.
 func (a *ProxyAgent) Add(key agent.AddedKey) error {
 	return a.local.Add(key)
 }
 
+// Remove removes identities with the given public key (local).
+// It will not remove from extended agent.
 func (a *ProxyAgent) Remove(key ssh.PublicKey) error {
 	return a.local.Remove(key)
 }
 
+// RemoveAll removes all identities (local).
+// It will not remove all from extended agent.
 func (a *ProxyAgent) RemoveAll() error {
 	return a.local.RemoveAll()
 }
 
+// Lock locks the agent (local + extended).
 func (a *ProxyAgent) Lock(passphrase []byte) error {
 	err := a.local.Lock(passphrase)
 	if err != nil {
@@ -97,6 +109,7 @@ func (a *ProxyAgent) Lock(passphrase []byte) error {
 	return err
 }
 
+// Unlock undoes the effect of Lock (local + extended).
 func (a *ProxyAgent) Unlock(passphrase []byte) error {
 	err := a.local.Unlock(passphrase)
 	if err != nil {
@@ -110,6 +123,8 @@ func (a *ProxyAgent) Unlock(passphrase []byte) error {
 	return err
 }
 
+// Sign returns a signature by signing data with the given public key (local + extended).
+// Prioritize signing from the local. If signing from the local source fails, then try extended.
 func (a *ProxyAgent) Sign(key ssh.PublicKey, data []byte) (*ssh.Signature, error) {
 	sig, err := a.local.Sign(key, data)
 	if err == nil {
@@ -123,6 +138,7 @@ func (a *ProxyAgent) Sign(key ssh.PublicKey, data []byte) (*ssh.Signature, error
 	return sig, err
 }
 
+// Signers returns signers for all signers (local + extended).
 func (a *ProxyAgent) Signers() ([]ssh.Signer, error) {
 	signers, err := a.local.Signers()
 	if err != nil {
@@ -143,6 +159,8 @@ func (a *ProxyAgent) Signers() ([]ssh.Signer, error) {
 	return signers, err
 }
 
+// SignWithFlags returns a signature by signing data with the given public key (local + extended).
+// Prioritize signing from the local. If signing from the local source fails, then try extended.
 func (a *ProxyAgent) SignWithFlags(key ssh.PublicKey, data []byte, flags agent.SignatureFlags) (*ssh.Signature, error) {
 	sig, err := a.local.(agent.ExtendedAgent).SignWithFlags(key, data, flags)
 	if err == nil {
@@ -156,6 +174,7 @@ func (a *ProxyAgent) SignWithFlags(key ssh.PublicKey, data []byte, flags agent.S
 	return sig, err
 }
 
+// Extension not supported.
 func (a *ProxyAgent) Extension(extensionType string, contents []byte) ([]byte, error) {
 	return nil, agent.ErrExtensionUnsupported
 }

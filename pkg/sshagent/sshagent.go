@@ -22,6 +22,7 @@ type SSHAgent struct {
 	poxyAgent  *ProxyAgent
 }
 
+// New creates a new SSHAgent.
 func New(socketPath string, log types.Logger) (*SSHAgent, error) {
 	s := &SSHAgent{
 		socketPath: socketPath,
@@ -40,14 +41,18 @@ func New(socketPath string, log types.Logger) (*SSHAgent, error) {
 	return s, nil
 }
 
+// SetExtendedAgent sets the extended agent path.
 func (s *SSHAgent) SetExtendedAgent(p string) {
 	s.poxyAgent.SetExtendedAgent(p)
 }
 
+// AddIdentities adds identities to the agent(local).
+// It not adds identities to the extended agent.
 func (s *SSHAgent) AddIdentities(key ...agent.AddedKey) error {
 	return s.poxyAgent.AddIdentities(key...)
 }
 
+// Listen starts listening on the ssh auth socket.
 func (s *SSHAgent) Listen() {
 	for {
 		conn, err := s.l.Accept()
@@ -71,6 +76,7 @@ func (s *SSHAgent) Listen() {
 	}
 }
 
+// Close closes the ssh auth socket.
 func (s *SSHAgent) Close() {
 	close(s.done)
 	_ = s.l.Close()

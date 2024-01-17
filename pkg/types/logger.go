@@ -5,6 +5,7 @@
 
 package types
 
+// Logger is the interface for logging.
 type Logger interface {
 	Infof(format string, args ...any)
 	Warnf(format string, args ...any)
