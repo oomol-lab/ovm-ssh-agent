@@ -30,4 +30,4 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Update pkg.go.dev
-        run: curl https://proxy.golang.org/github.com/${{ github.repository }}/v2/@v/${{ github.ref_name }}.info
+        run: curl https://proxy.golang.org/github.com/${{ github.repository }}/@v/${{ github.ref_name }}.info
