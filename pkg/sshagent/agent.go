@@ -27,6 +27,11 @@ func NewProxyAgent(log types.Logger) *ProxyAgent {
 	}
 }
 
+// GetExtendedAgentSocketPath returns the extended agent path.
+func (a *ProxyAgent) GetExtendedAgentSocketPath() string {
+	return a.upstreamSocketPath
+}
+
 // SetExtendedAgent sets the extended agent path.
 func (a *ProxyAgent) SetExtendedAgent(socketPath string) {
 	a.upstreamSocketPath = socketPath

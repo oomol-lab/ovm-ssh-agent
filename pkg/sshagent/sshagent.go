@@ -41,6 +41,11 @@ func New(socketPath string, log types.Logger) (*SSHAgent, error) {
 	return s, nil
 }
 
+// GetExtendedAgentSocketPath returns the extended agent path.
+func (s *SSHAgent) GetExtendedAgentSocketPath() string {
+	return s.poxyAgent.GetExtendedAgentSocketPath()
+}
+
 // SetExtendedAgent sets the extended agent path.
 func (s *SSHAgent) SetExtendedAgent(p string) {
 	s.poxyAgent.SetExtendedAgent(p)
