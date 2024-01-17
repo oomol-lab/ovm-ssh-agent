@@ -77,7 +77,7 @@ func (s *SSHAgent) Listen() {
 }
 
 // Close closes the ssh auth socket.
-func (s *SSHAgent) Close() {
+func (s *SSHAgent) Close() error {
 	close(s.done)
-	_ = s.l.Close()
+	return s.l.Close()
 }
