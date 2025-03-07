@@ -7,80 +7,90 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-
-	"github.com/sirupsen/logrus"
 )
 
-// GetSystemSSHAgentUDF get system agent UFD,
-func GetSystemSSHAgentUDF() string {
-	upstreamSocket := ""
-	if socketFile := getFromEnv(); socketFile != "" {
-		logrus.Infof("using socket file from $SSH_AUTH_SOCK as upstream agent socket: %q", socketFile)
-		upstreamSocket = socketFile
-	} else if socketFile = getFromLaunchctl(); socketFile != "" {
-		logrus.Infof("using socket file from launchctl as upstream agent socket: %q", socketFile)
-		upstreamSocket = socketFile
-	} else if socketFile = getFrom1Password(); socketFile != "" {
-		upstreamSocket = socketFile
+// GetSSHAgent get system agent
+func GetSSHAgent() string {
+	fallback := ""
+
+	if s := GetSSHAgentEnv(); s != "" {
+		if strings.Contains(s, "com.apple.launchd.") {
+			fallback = s
+		} else {
+			return s
+		}
 	}
 
-	// if upstreamSocket unix socket file, return empty
-	if !isUnixSocket(upstreamSocket) {
-		return ""
+	if s := GetSSHAgent1Password(); s != "" {
+		return s
 	}
 
-	return upstreamSocket
+	if s := GetSSHAgentLaunchctl(); s != "" {
+		return s
+	}
+
+	return fallback
 }
 
-// isUnixSocket checks if the given file path is a Unix socket.
-func isUnixSocket(filePath string) bool {
+// IsUnixSocket checks if the given file path is a Unix socket
+func IsUnixSocket(filePath string) bool {
 	fileInfo, err := os.Stat(filePath)
 	if err != nil {
-		logrus.Warnf("failed to stat file %q: %v", filePath, err)
 		return false
 	}
 
 	if fileInfo.Mode()&os.ModeSocket == 0 {
-		logrus.Warnf("file %q exists but is not a unix socket", filePath)
 		return false
 	}
 
 	return true
 }
 
-func getFromEnv() string {
+func GetSSHAgentEnv() string {
 	val, ok := os.LookupEnv("SSH_AUTH_SOCK")
 	if !ok {
 		return ""
 	}
 
-	return strings.TrimSpace(val)
-}
-
-func getFromLaunchctl() string {
-	output, err := exec.Command("/bin/launchctl", "asuser", strconv.Itoa(os.Getuid()), "launchctl", "getenv", "SSH_AUTH_SOCK").Output()
-	if err != nil {
-		logrus.Warnf("failed to get auth socket from launchctl: %v", err)
+	val = strings.TrimSpace(val)
+	if !IsUnixSocket(val) {
 		return ""
 	}
 
-	return string(bytes.TrimSpace(output))
+	return val
 }
 
-func getFrom1Password() string {
+func GetSSHAgentLaunchctl() string {
+	output, err := exec.Command("/bin/launchctl", "asuser", strconv.Itoa(os.Getuid()), "launchctl", "getenv", "SSH_AUTH_SOCK").Output()
+	if err != nil {
+		return ""
+	}
+
+	val := string(bytes.TrimSpace(output))
+	if !IsUnixSocket(val) {
+		return ""
+	}
+
+	return val
+}
+
+func GetSSHAgent1Password() string {
 	knownAgentPaths := []string{
 		".1password/agent.sock",
 		"Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock",
 	}
 
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+
 	for _, agentPath := range knownAgentPaths {
-		userHomeDir, err := os.UserHomeDir()
-		if err != nil {
-			return ""
-		}
-		if isUnixSocket(filepath.Join(userHomeDir, agentPath)) {
-			return agentPath
+		p := filepath.Join(homeDir, agentPath)
+		if IsUnixSocket(p) {
+			return p
 		}
 	}
+
 	return ""
 }
