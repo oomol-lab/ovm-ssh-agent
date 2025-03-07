@@ -1,185 +1,271 @@
-/*
- * SPDX-FileCopyrightText: 2024 OOMOL, Inc. <https://www.oomol.com>
- * SPDX-License-Identifier: MPL-2.0
- */
-
 package sshagent
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
 	"net"
+	"os"
+	"path/filepath"
+	"strings"
 
-	"github.com/oomol-lab/ovm-ssh-agent/pkg/types"
+	"github.com/sirupsen/logrus"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 )
 
-type ProxyAgent struct {
-	local              agent.Agent
-	upstreamSocketPath string
-	log                types.Logger
+type agentServer struct {
+	AgentServer agent.ExtendedAgent
+	SocketFile  string
 }
 
-// NewProxyAgent creates a new ProxyAgent.
-func NewProxyAgent(log types.Logger) *ProxyAgent {
-	return &ProxyAgent{
-		local: agent.NewKeyring(),
-		log:   log,
-	}
+type localAgent agentServer
+type upstreamAgent agentServer
+
+type SSHAgent struct {
+	// agent server mode
+	LocalAgent *localAgent
+	// proxy mode, can work with agent server mod together
+	upstreamAgent *upstreamAgent
+	context       context.Context
+	cancel        context.CancelFunc
 }
 
-// GetExtendedAgentSocketPath returns the extended agent path.
-func (a *ProxyAgent) GetExtendedAgentSocketPath() string {
-	return a.upstreamSocketPath
+func marshal(key ssh.PublicKey) string {
+	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(key)))
 }
 
-// SetExtendedAgent sets the extended agent path.
-func (a *ProxyAgent) SetExtendedAgent(socketPath string) {
-	a.upstreamSocketPath = socketPath
-}
-
-// AddIdentities adds identities to the agent(local).
-// It not adds identities to the extended agent.
-func (a *ProxyAgent) AddIdentities(key ...agent.AddedKey) error {
-	for _, k := range key {
-		if err := a.Add(k); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func (a *ProxyAgent) refreshExtendedAgent() agent.ExtendedAgent {
-	p := a.upstreamSocketPath
-	if p == "" {
-		return nil
-	}
-
-	conn, err := net.Dial("unix", p)
+func marshalPrivate(key interface{}) (string, error) {
+	signer, err := ssh.NewSignerFromKey(key)
 	if err != nil {
-		a.log.Warnf("dial extended agent failed: %v", err)
-		return nil
+		return "", fmt.Errorf("failed to marshal private key: %w", err)
 	}
-
-	return agent.NewClient(conn)
+	return marshal(signer.PublicKey()), nil
 }
 
-// List returns the identities known to the agent(local + extended).
-func (a *ProxyAgent) List() ([]*agent.Key, error) {
-	l, err := a.local.List()
+func NewSSHAgent(ctx context.Context) (*SSHAgent, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	sshAgent := &SSHAgent{
+		LocalAgent: &localAgent{
+			AgentServer: agent.NewKeyring().(agent.ExtendedAgent),
+			// default listen dir is $TMPDIR/oo-ssh-agent.socks
+			SocketFile: filepath.Join(os.TempDir(), "oo-ssh-agent.socks"),
+		},
+		upstreamAgent: nil,
+		context:       ctx,
+		cancel:        cancel,
+	}
+	return sshAgent, nil
+}
 
-	if ea := a.refreshExtendedAgent(); ea != nil {
-		us, err2 := ea.List()
-		err = err2
+// UsingUpstreamAgentSocks connect upstream ssh agent socks, current only support one
+// upstream agent socks
+func (s *SSHAgent) UsingUpstreamAgentSocks(socketFile string) {
+	upstreamConn, err := net.Dial("unix", socketFile)
+	if err != nil {
+		logrus.Errorf("failed to refresh upstream agent: %v", err)
+	}
+	s.upstreamAgent = &upstreamAgent{
+		AgentServer: agent.NewClient(upstreamConn),
+		SocketFile:  socketFile,
+	}
+}
 
+// UsingLocalKeys load local keys from files
+func (s *SSHAgent) UsingLocalKeys(keys ...string) {
+	for _, f := range keys {
+		r, err := os.ReadFile(f)
 		if err != nil {
-			a.log.Warnf("get upstream list failed: %v", err)
-		} else {
-			l = append(l, us...)
+			logrus.Errorf("failed to read file %q: %v", f, err)
+			continue
 		}
-	}
-
-	return l, err
-}
-
-// Add adds a private key to the agent(local).
-// It will not add from extended agent.
-func (a *ProxyAgent) Add(key agent.AddedKey) error {
-	return a.local.Add(key)
-}
-
-// Remove removes identities with the given public key (local).
-// It will not remove from extended agent.
-func (a *ProxyAgent) Remove(key ssh.PublicKey) error {
-	return a.local.Remove(key)
-}
-
-// RemoveAll removes all identities (local).
-// It will not remove all from extended agent.
-func (a *ProxyAgent) RemoveAll() error {
-	return a.local.RemoveAll()
-}
-
-// Lock locks the agent (local + extended).
-func (a *ProxyAgent) Lock(passphrase []byte) error {
-	err := a.local.Lock(passphrase)
-	if err != nil {
-		a.log.Warnf("lock local agent failed: %v", err)
-	}
-
-	if ea := a.refreshExtendedAgent(); ea != nil {
-		err = ea.Lock(passphrase)
-	}
-
-	return err
-}
-
-// Unlock undoes the effect of Lock (local + extended).
-func (a *ProxyAgent) Unlock(passphrase []byte) error {
-	err := a.local.Unlock(passphrase)
-	if err != nil {
-		a.log.Warnf("unlock local agent failed: %v", err)
-	}
-
-	if ea := a.refreshExtendedAgent(); ea != nil {
-		err = ea.Unlock(passphrase)
-	}
-
-	return err
-}
-
-// Sign returns a signature by signing data with the given public key (local + extended).
-// Prioritize signing from the local. If signing from the local source fails, then try extended.
-func (a *ProxyAgent) Sign(key ssh.PublicKey, data []byte) (*ssh.Signature, error) {
-	sig, err := a.local.Sign(key, data)
-	if err == nil {
-		return sig, nil
-	}
-
-	if ea := a.refreshExtendedAgent(); ea != nil {
-		sig, err = ea.Sign(key, data)
-	}
-
-	return sig, err
-}
-
-// Signers returns signers for all signers (local + extended).
-func (a *ProxyAgent) Signers() ([]ssh.Signer, error) {
-	signers, err := a.local.Signers()
-	if err != nil {
-		a.log.Warnf("get local signers failed: %v", err)
-	}
-
-	if ea := a.refreshExtendedAgent(); ea != nil {
-		us, err2 := ea.Signers()
-		err = err2
-
+		privateKey, err := ssh.ParseRawPrivateKey(r)
 		if err != nil {
-			a.log.Warnf("get upstream signers failed: %v", err)
+			logrus.Errorf("failed to parse private key %q: %v", f, err)
+			continue
+		}
+
+		addedKey := agent.AddedKey{
+			PrivateKey: privateKey,
+		}
+
+		if err = s.LocalAgent.AgentServer.Add(addedKey); err != nil {
+			logrus.Errorf("failed to add key %q: %v", f, err)
+		}
+	}
+}
+
+// refreshUpstreamAgent reconnect upstream agent socket
+func (s *SSHAgent) refreshUpstreamAgent() {
+	if s.upstreamAgent != nil {
+		s.UsingUpstreamAgentSocks(s.upstreamAgent.SocketFile)
+	}
+}
+
+func (s *SSHAgent) Serve(listener net.Listener) error {
+	connChan, errs := make(chan net.Conn), make(chan error)
+	go func() {
+		for {
+			if conn, err := listener.Accept(); err != nil {
+				errs <- err
+			} else {
+				connChan <- conn
+			}
+		}
+	}()
+	for {
+		select {
+		case <-s.context.Done():
+			return context.Cause(s.context)
+		case conn := <-connChan:
+			logrus.Infoln("receiving new connection")
+			go func(conn net.Conn) {
+				if err := agent.ServeAgent(s, conn); err != nil && err != io.EOF {
+					errs <- err
+				}
+			}(conn)
+		case err := <-errs:
+			return fmt.Errorf("unexpected error: %w", err)
+		}
+	}
+}
+
+// Remove only remove key from local agent
+func (s *SSHAgent) Remove(key ssh.PublicKey) error {
+	logrus.Infof("removing a key: %q", marshal(key))
+	return s.LocalAgent.AgentServer.Remove(key)
+}
+
+// RemoveAll only remove all key from local agent
+func (s *SSHAgent) RemoveAll() error {
+	logrus.Infof("removing all keys")
+	return s.LocalAgent.AgentServer.RemoveAll()
+}
+
+func (s *SSHAgent) Sign(key ssh.PublicKey, data []byte) (*ssh.Signature, error) {
+	logrus.Infof("signing data with a piblic key: %q", marshal(key))
+	return s.SignWithFlags(key, data, 0)
+}
+
+func flagsToString(flags agent.SignatureFlags) string {
+	out, underlying := "", flags
+	if underlying&agent.SignatureFlagReserved == agent.SignatureFlagReserved {
+		out += "|reserved"
+	}
+	if underlying&agent.SignatureFlagRsaSha256 == agent.SignatureFlagRsaSha256 {
+		out += "|rsa-sha256"
+	}
+	if underlying&agent.SignatureFlagRsaSha512 == agent.SignatureFlagRsaSha512 {
+		out += "|rsa-sha256"
+	}
+	if out == "" {
+		return "none"
+	}
+	return out[1:]
+}
+
+// Add only add private key into local agent
+func (s *SSHAgent) Add(key agent.AddedKey) error {
+	privateKey, err := marshalPrivate(key.PrivateKey)
+	if err != nil {
+		return fmt.Errorf("failed to marshal private key: %w", err)
+	}
+	logrus.Infof("adding new key: %q", privateKey)
+	return s.LocalAgent.AgentServer.Add(key)
+}
+
+func (s *SSHAgent) Extension(extensionType string, contents []byte) ([]byte, error) {
+	logrus.Infof("extension type: %q", extensionType)
+	return s.LocalAgent.AgentServer.Extension(extensionType, contents)
+}
+
+// List return all keys from upstream and local agent
+func (s *SSHAgent) List() ([]*agent.Key, error) {
+	logrus.Infof("listing keys")
+	keys := make([]*agent.Key, 0)
+
+	// get keys list from upstream agent
+	if s.upstreamAgent != nil {
+		logrus.Infof("List(): refreshUpstreamAgent")
+		s.refreshUpstreamAgent()
+		upstreamKeys, err := s.upstreamAgent.AgentServer.List()
+		if err != nil {
+			return nil, fmt.Errorf("failed to list upstream keys: %w", err)
+		}
+		keys = append(keys, upstreamKeys...)
+	}
+
+	localKeys, err := s.LocalAgent.AgentServer.List()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list local keys: %w", err)
+	}
+	keys = append(keys, localKeys...)
+	return keys, nil
+}
+
+// Signers return all signers from upstream and local agent
+func (s *SSHAgent) Signers() (out []ssh.Signer, _ error) {
+	logrus.Infof("returning signers")
+	signer := make([]ssh.Signer, 0)
+
+	// get signer from upstream agent
+	if s.upstreamAgent != nil {
+		logrus.Infof("Signers(): refreshUpstreamAgent")
+		s.refreshUpstreamAgent()
+		upstreamSigner, err := s.upstreamAgent.AgentServer.Signers()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get upstream signers: %w", err)
+		}
+		signer = append(signer, upstreamSigner...)
+	}
+
+	localSigner, err := s.LocalAgent.AgentServer.Signers()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get local signers: %w", err)
+	}
+	signer = append(signer, localSigner...)
+	return signer, nil
+}
+
+// SignWithFlags generate signature a with public key from upstream and local agent
+func (s *SSHAgent) SignWithFlags(key ssh.PublicKey, data []byte, flags agent.SignatureFlags) (*ssh.Signature, error) {
+	// First try upstreamAgent
+	if s.upstreamAgent != nil {
+		logrus.Infof("SignWithFlags(): refreshUpstreamAgent")
+		s.refreshUpstreamAgent()
+		logrus.Infof("try using upstream agent signing data with key %q and flag: %q", ssh.MarshalAuthorizedKey(key), flagsToString(flags))
+		signature, err := s.upstreamAgent.AgentServer.SignWithFlags(key, data, flags)
+		if err != nil {
+			logrus.Infof("SignWithFlags with upstream agent err: %v", err)
 		} else {
-			signers = append(signers, us...)
+			return signature, nil
 		}
 	}
 
-	return signers, err
-}
-
-// SignWithFlags returns a signature by signing data with the given public key (local + extended).
-// Prioritize signing from the local. If signing from the local source fails, then try extended.
-func (a *ProxyAgent) SignWithFlags(key ssh.PublicKey, data []byte, flags agent.SignatureFlags) (*ssh.Signature, error) {
-	sig, err := a.local.(agent.ExtendedAgent).SignWithFlags(key, data, flags)
-	if err == nil {
-		return sig, nil
+	logrus.Infof("try using local agent signing data with key %q and flag: %q", ssh.MarshalAuthorizedKey(key), flagsToString(flags))
+	signature, err := s.LocalAgent.AgentServer.SignWithFlags(key, data, flags)
+	if err != nil {
+		logrus.Infof("SignWithFlags with local agent error: %v", err)
+	} else {
+		return signature, nil
 	}
 
-	if ea := a.refreshExtendedAgent(); ea != nil {
-		sig, err = ea.SignWithFlags(key, data, flags)
-	}
-
-	return sig, err
+	return nil, errors.New("failed to sign data using upstream and local agent")
 }
 
-// Extension not supported.
-func (a *ProxyAgent) Extension(extensionType string, contents []byte) ([]byte, error) {
-	return nil, agent.ErrExtensionUnsupported
+// Unlock only unlock local agent
+func (s *SSHAgent) Unlock(passphrase []byte) error {
+	logrus.Infof("try unlocking agent")
+	return s.LocalAgent.AgentServer.Unlock(passphrase)
+}
+
+// Lock only lock local agent
+func (s *SSHAgent) Lock(passphrase []byte) error {
+	logrus.Infof("try locking agent")
+	return s.LocalAgent.AgentServer.Lock(passphrase)
+}
+
+func (s *SSHAgent) Close() {
+	s.cancel()
 }

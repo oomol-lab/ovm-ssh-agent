@@ -1,68 +1,46 @@
-/*
- * SPDX-FileCopyrightText: 2024 OOMOL, Inc. <https://www.oomol.com>
- * SPDX-License-Identifier: MPL-2.0
- */
-
 package main
 
 import (
-	"fmt"
+	"context"
+	"github.com/oomol-lab/ovm-ssh-agent/pkg/identity"
+	"github.com/oomol-lab/ovm-ssh-agent/pkg/sshagent"
+	"github.com/oomol-lab/ovm-ssh-agent/pkg/system"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
 
-	"github.com/oomol-lab/ovm-ssh-agent/pkg/identity"
-	"github.com/oomol-lab/ovm-ssh-agent/pkg/sshagent"
+	"github.com/sirupsen/logrus"
 )
 
-type Log struct {
-}
-
-func (l *Log) Infof(format string, args ...interface{}) {
-	fmt.Printf(format+"\n", args...)
-}
-
-func (l *Log) Warnf(format string, args ...interface{}) {
-	fmt.Printf(format+"\n", args...)
-}
-
 func main() {
-	temp, err := os.MkdirTemp("", "ovm-ssh-agent")
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	sshAgent, err := sshagent.NewSSHAgent(ctx)
 	if err != nil {
-		panic(temp)
+		logrus.Fatalf("failed to create agent: %v", err)
 	}
 
-	pid := os.Getpid()
+	// Conventional function to find local private keys ~/.ssh
+	localPrivateKeys := identity.FindConventionalPrivateKeys()
+	sshAgent.UsingLocalKeys(localPrivateKeys...)
 
-	socketPath := fmt.Sprintf("%s/agent.%d", temp, pid)
+	// Conventional function to find system auth socket
+	localAuthSocket := system.GetSystemSSHAgentUDF()
+	sshAgent.UsingUpstreamAgentSocks(localAuthSocket)
 
-	log := &Log{}
-	agent, err := sshagent.New(socketPath, log)
+	socketFile := sshAgent.LocalAgent.SocketFile
+	_ = os.Remove(socketFile)
+	logrus.Infof("start listening: %q", socketFile)
+	listener, err := net.Listen("unix", socketFile)
 	if err != nil {
-		panic(err)
+		logrus.Fatalf("failed to open socket:%v", err)
 	}
 
-	fmt.Println("ssh agent socket path:", socketPath)
+	defer listener.Close()
 
-	if val, ok := os.LookupEnv("SSH_AUTH_SOCK"); ok {
-		agent.SetExtendedAgent(val)
-		fmt.Println("proxy ssh agent socket path:", val)
+	if err := sshAgent.Serve(listener); err != nil {
+		logrus.Fatalf("serve exit: %q", err)
 	}
-
-	keys := identity.FindAll(log)
-	if err := agent.AddIdentities(keys...); err != nil {
-		panic(err)
-	}
-
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-
-	go func() {
-		<-sigs
-		fmt.Println("stop ssh agent")
-		agent.Close()
-	}()
-
-	fmt.Println("start ssh agent")
-	agent.Listen()
 }
