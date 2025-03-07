@@ -10,11 +10,9 @@ import (
 )
 
 type upstreamAgent struct {
-	conn  net.Conn
-	agent agent.ExtendedAgent
-
+	conn   net.Conn
+	agent  agent.ExtendedAgent
 	socket string
-
 	io.Closer
 }
 
@@ -67,5 +65,8 @@ func (u *upstreamAgent) SignWithFlags(key ssh.PublicKey, data []byte, flags agen
 }
 
 func (u *upstreamAgent) Close() error {
-	return u.conn.Close()
+	if u.conn != nil {
+		return u.conn.Close()
+	}
+	return nil
 }
