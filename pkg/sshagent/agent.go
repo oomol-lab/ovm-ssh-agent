@@ -57,9 +57,7 @@ func (s *SSHAgent) Serve(listener net.Listener) error {
 
 	go func() {
 		for {
-			if conn, err := listener.Accept(); err != nil {
-				errs <- err
-			} else {
+			if conn, err := listener.Accept(); err == nil {
 				connChan <- conn
 			}
 		}
