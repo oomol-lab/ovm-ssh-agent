@@ -3,7 +3,6 @@ package sshagent
 import (
 	"context"
 	"fmt"
-	"io"
 	"net"
 	"os"
 
@@ -52,29 +51,15 @@ func (s *SSHAgent) LoadLocalKeys(keys ...string) {
 }
 
 func (s *SSHAgent) Serve(listener net.Listener) error {
-	connChan, errs := make(chan net.Conn), make(chan error)
-	defer s.cancel()
-
-	go func() {
-		for {
-			if conn, err := listener.Accept(); err == nil {
-				connChan <- conn
-			}
-		}
-	}()
-
 	for {
-		select {
-		case <-s.context.Done():
-			return context.Cause(s.context)
-		case conn := <-connChan:
+		if s.context.Err() != nil {
+			return fmt.Errorf("stop ssh agent serve, because ctx done: %w", s.context.Err())
+		}
+
+		if conn, err := listener.Accept(); err == nil {
 			go func(conn net.Conn) {
-				if err := agent.ServeAgent(s, conn); err != nil && err != io.EOF {
-					errs <- err
-				}
+				_ = agent.ServeAgent(s, conn)
 			}(conn)
-		case err := <-errs:
-			return fmt.Errorf("unexpected error: %w", err)
 		}
 	}
 }
