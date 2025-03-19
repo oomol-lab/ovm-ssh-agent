@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -23,10 +22,10 @@ func main() {
 		panic("failed to get remote auth socket")
 	}
 
-	sshAgent, err := sshagent.NewSSHAgent(ctx, upstreamSocket)
-	if err != nil {
-		panic(fmt.Errorf("failed to create agent: %w", err))
-	}
+	localSocket := filepath.Join(os.TempDir(), "a.sock")
+	_ = os.Remove(localSocket)
+
+	sshAgent := sshagent.NewSSHAgent(ctx, upstreamSocket, localSocket)
 
 	// find local private keys ~/.ssh
 	{
@@ -34,16 +33,9 @@ func main() {
 		sshAgent.LoadLocalKeys(keys...)
 	}
 
-	localSocket := filepath.Join(os.TempDir(), "a.sock")
-	_ = os.Remove(localSocket)
 	fmt.Printf("start listening: %q", localSocket)
-	listener, err := net.Listen("unix", localSocket)
-	if err != nil {
-		panic(fmt.Errorf("failed to listen unix socket: %w", err))
-	}
-	defer listener.Close()
 
-	if err := sshAgent.Serve(listener); err != nil {
+	if err := sshAgent.Serve(); err != nil {
 		panic(fmt.Errorf("failed to serve: %w", err))
 	}
 }
