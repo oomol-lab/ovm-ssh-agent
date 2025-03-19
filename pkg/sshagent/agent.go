@@ -11,24 +11,26 @@ import (
 )
 
 type SSHAgent struct {
-	localAgent    agent.ExtendedAgent
-	upstreamAgent *upstreamAgent
+	localAgent      agent.ExtendedAgent
+	upstreamAgent   *upstreamAgent
+	localSocketFile string
 
 	context context.Context
 	cancel  context.CancelFunc
 }
 
-func NewSSHAgent(ctx context.Context, upstreamSocket string) (*SSHAgent, error) {
+func NewSSHAgent(ctx context.Context, upstreamSocket, localSocketFile string) *SSHAgent {
 	ctx, cancel := context.WithCancel(ctx)
 
 	sshAgent := &SSHAgent{
-		localAgent:    agent.NewKeyring().(agent.ExtendedAgent),
-		upstreamAgent: newUpstreamAgent(upstreamSocket),
-		context:       ctx,
-		cancel:        cancel,
+		localAgent:      agent.NewKeyring().(agent.ExtendedAgent),
+		upstreamAgent:   newUpstreamAgent(upstreamSocket),
+		localSocketFile: localSocketFile,
+		context:         ctx,
+		cancel:          cancel,
 	}
 
-	return sshAgent, nil
+	return sshAgent
 }
 
 // LoadLocalKeys load local keys from files
@@ -50,7 +52,15 @@ func (s *SSHAgent) LoadLocalKeys(keys ...string) {
 	}
 }
 
-func (s *SSHAgent) Serve(listener net.Listener) error {
+func (s *SSHAgent) Serve() error {
+	listener, err := net.Listen("unix", s.localSocketFile)
+	if err != nil {
+		return fmt.Errorf("failed to listen unix socket: %w", err)
+	}
+	context.AfterFunc(s.context, func() {
+		_ = listener.Close()
+	})
+
 	for {
 		if s.context.Err() != nil {
 			return fmt.Errorf("stop ssh agent serve, because ctx done: %w", s.context.Err())
