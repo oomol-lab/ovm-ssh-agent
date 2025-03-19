@@ -1,4 +1,4 @@
-module github.com/oomol-lab/ovm-ssh-agent
+module github.com/oomol-lab/ovm-ssh-agent/v3
 
 go 1.24.0
 

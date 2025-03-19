@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"github.com/oomol-lab/ovm-ssh-agent/pkg/identity"
-	"github.com/oomol-lab/ovm-ssh-agent/pkg/sshagent"
-	"github.com/oomol-lab/ovm-ssh-agent/pkg/system"
+	"github.com/oomol-lab/ovm-ssh-agent/v3/pkg/identity"
+	"github.com/oomol-lab/ovm-ssh-agent/v3/pkg/sshagent"
+	"github.com/oomol-lab/ovm-ssh-agent/v3/pkg/system"
 )
 
 func main() {
